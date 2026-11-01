@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Conexión Mercado Libre</title>
+<style>
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background:#f5f7fb; color:#202433; }
+  header { background:#1f4b99; color:#fff; padding:14px 18px; font-weight:600; font-size:1.1rem; }
+  main { max-width:520px; margin:0 auto; padding:18px; }
+  .card { background:#fff; border:1px solid #e2e7f0; border-radius:10px; padding:16px; margin-bottom:14px; }
+  #codigo { font-family: Consolas, monospace; font-size:1.05rem; word-break:break-all;
+            background:#eef3fb; border-radius:8px; padding:12px; margin:10px 0; }
+  button, .boton { display:block; width:100%; box-sizing:border-box; padding:14px; font-size:1rem;
+           font-weight:600; border:0; border-radius:8px; margin-top:10px; cursor:pointer;
+           text-align:center; text-decoration:none; }
+  .azul { background:#1f4b99; color:#fff; }
+  .verde { background:#1f9d55; color:#fff; }
+  .gris { background:#fff; color:#1f4b99; border:2px solid #1f4b99; }
+  .error { border-left:5px solid #c62828; }
+  small { color:#5b6470; }
+</style>
+</head>
+<body>
+<header>Conexión con Mercado Libre</header>
+<main>
+  <div id="ok" class="card" hidden>
+    <p><b>¡Listo! Autorizaste la conexión.</b></p>
+    <p>Envía este código a tu empresa de reparto <b>ahora</b> (vence en pocos minutos):</p>
+    <div id="codigo"></div>
+    <button id="copiar" class="azul">Copiar código</button>
+    <a id="whatsapp" class="boton verde" target="_blank" rel="noopener">Enviar por WhatsApp</a>
+    <p><small>El código solo sirve una vez y no da acceso a tu contraseña.</small></p>
+  </div>
+
+  <div id="local" class="card" hidden>
+    <small>¿Estás en el computador donde corre Flex Ops?</small>
+    <a id="enlaceLocal" class="boton gris">Conectar directo en este PC</a>
+  </div>
+
+  <div id="mal" class="card error" hidden>
+    <p><b>No se completó la autorización.</b></p>
+    <p id="detalle"></p>
+    <p>Pide a tu empresa de reparto un link nuevo y vuelve a intentarlo.</p>
+  </div>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  const code = q.get("code"), state = q.get("state");
+  if (code && state) {
+    const conexion = state + ":" + code;
+    document.getElementById("codigo").textContent = conexion;
+    document.getElementById("whatsapp").href =
+      "https://wa.me/?text=" + encodeURIComponent("Código de conexión Mercado Libre: " + conexion);
+    document.getElementById("copiar").onclick = async e => {
+      await navigator.clipboard.writeText(conexion);
+      e.target.textContent = "Copiado";
+    };
+    document.getElementById("enlaceLocal").href =
+      "http://127.0.0.1:5000/meli/callback?" + new URLSearchParams({ code, state });
+    document.getElementById("ok").hidden = false;
+    document.getElementById("local").hidden = false;
+  } else {
+    document.getElementById("detalle").textContent =
+      q.get("error_description") || q.get("error") || "No llegó el código de autorización.";
+    document.getElementById("mal").hidden = false;
+  }
+</script>
+</body>
+</html>
