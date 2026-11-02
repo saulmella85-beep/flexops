@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f4b99">
+<meta name="robots" content="noindex">
+<title>Escáner Flex</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:#f5f7fb; color:#202433; }
+  header { background:#1f4b99; color:#fff; padding:12px 16px; font-weight:600; font-size:1.1rem;
+           display:flex; justify-content:space-between; align-items:center; }
+  #total { background:#fff; color:#1f4b99; border-radius:20px; padding:2px 12px; font-weight:700; }
+  main { padding:12px; max-width:560px; margin:0 auto; }
+  .card { background:#fff; border:1px solid #e2e7f0; border-radius:10px; padding:12px; margin-bottom:12px; }
+  #lector { width:100%; border-radius:10px; overflow:hidden; background:#000; }
+  #resultado { border-radius:10px; padding:14px; color:#fff; margin:10px 0; background:#8a94a6; }
+  #resultado b { font-size:1.3rem; display:block; }
+  .ok { background:#1f9d55 !important; } .dup { background:#d97706 !important; } .err { background:#c62828 !important; }
+  button { width:100%; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; margin-top:8px; cursor:pointer; }
+  .azul { background:#1f4b99; color:#fff; } .verde { background:#1f9d55; color:#fff; }
+  .gris { background:#fff; color:#1f4b99; border:2px solid #1f4b99; }
+  .rojo { background:#fff; color:#c62828; border:2px solid #c62828; }
+  table { width:100%; border-collapse:collapse; font-size:.95rem; }
+  td { padding:7px 4px; border-bottom:1px solid #e8edf6; }
+  td:last-child { text-align:right; font-weight:700; }
+  .fila { display:flex; gap:8px; } .fila input { flex:1; padding:12px; font-size:1rem; border:1px solid #ced6e3; border-radius:8px; }
+  .fila button { width:auto; margin:0; padding:12px 16px; }
+  small { color:#5b6470; }
+</style>
+</head>
+<body>
+<header>📦 Escáner Flex <span id="total">0</span></header>
+<main>
+  <div class="card">
+    <div id="lector"></div>
+    <button id="btnCamara" class="azul">Abrir cámara</button>
+    <div id="resultado"><b>Listo</b>Abre la cámara y apunta al QR de cada etiqueta.</div>
+    <div class="fila">
+      <input id="manual" inputmode="numeric" placeholder="N° de envío a mano">
+      <button id="btnManual" class="gris">Agregar</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>Por vendedor</b> <small>(toca uno para ponerle nombre)</small>
+    <table><tbody id="vendedores"></tbody></table>
+  </div>
+
+  <div class="card">
+    <b>Enviar al PC</b>
+    <button id="btnEnviar" class="verde">Enviar lote (WhatsApp, correo…)</button>
+    <button id="btnCopiar" class="gris">Copiar lote</button>
+    <button id="btnLimpiar" class="rojo">Empezar lote nuevo</button>
+    <p><small id="estadoLote"></small></p>
+  </div>
+
+  <div class="card">
+    <b>Últimas lecturas</b>
+    <table><tbody id="historial"></tbody></table>
+  </div>
+</main>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const CLAVE = "escanerflex_lote", NOMBRES = "escanerflex_nombres", ENVIADO = "escanerflex_enviado";
+let lote = JSON.parse(localStorage.getItem(CLAVE) || "[]");        // [{id, sender, t}]
+let nombres = JSON.parse(localStorage.getItem(NOMBRES) || "{}");   // sender -> nombre
+let audio = null, scanner = null, ultimo = "", ultimoT = 0;
+
+function guardar() { localStorage.setItem(CLAVE, JSON.stringify(lote)); }
+function nombre(sender) { return sender ? (nombres[sender] || "Vendedor " + sender) : "Sin vendedor"; }
+function hora(iso) { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); }
+
+// QR Flex: {"id":"48403138897","sender_id":225585075,...}
+function leerQR(texto) {
+  texto = texto.trim();
+  try {
+    const d = JSON.parse(texto);
+    if (d && d.id) return { id: String(d.id), sender: d.sender_id ? String(d.sender_id) : "" };
+  } catch (e) { /* no es JSON */ }
+  const m = texto.match(/^\d{8,14}$/);
+  return m ? { id: texto, sender: "" } : null;
+}
+
+function pitido(tipo) {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const notas = { ok: [[1200, .09]], dup: [[600, .12], [600, .12]], err: [[220, .4]] }[tipo];
+    let t = audio.currentTime;
+    for (const [f, d] of notas) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = f; o.type = "square"; g.gain.value = .1;
+      o.connect(g); g.connect(audio.destination); o.start(t); o.stop(t + d); t += d + .06;
+    }
+  } catch (e) {}
+  if (navigator.vibrate) navigator.vibrate(tipo === "ok" ? 80 : [120, 80, 120]);
+}
+
+function aviso(clase, titulo, detalle) {
+  const r = $("resultado");
+  r.className = clase;
+  r.replaceChildren(Object.assign(document.createElement("b"), { textContent: titulo }), detalle || "");
+}
+
+function registrar(texto) {
+  const q = leerQR(texto);
+  if (!q) { aviso("err", "No es una etiqueta Flex", texto.slice(0, 80)); pitido("err"); return; }
+  const previo = lote.find(x => x.id === q.id);
+  if (previo) {
+    aviso("dup", "REPETIDO: " + q.id, `Ya escaneado a las ${hora(previo.t)} · ${nombre(previo.sender)}`);
+    pitido("dup"); return;
+  }
+  lote.push({ id: q.id, sender: q.sender, t: new Date().toISOString().replace(/\.\d+Z$/, "Z") });
+  guardar();
+  aviso("ok", "✔ " + q.id, nombre(q.sender));
+  pitido("ok");
+  pintar();
+}
+
+function pintar() {
+  $("total").textContent = lote.length;
+  const conteo = {};
+  lote.forEach(x => conteo[x.sender] = (conteo[x.sender] || 0) + 1);
+  $("vendedores").replaceChildren(...Object.entries(conteo).sort((a, b) => b[1] - a[1]).map(([s, n]) => {
+    const tr = document.createElement("tr");
+    tr.append(Object.assign(document.createElement("td"), { textContent: nombre(s) }),
+              Object.assign(document.createElement("td"), { textContent: n }));
+    if (s) tr.onclick = () => {
+      const v = prompt("Nombre del vendedor " + s, nombres[s] || "");
+      if (v !== null) { nombres[s] = v.trim(); if (!nombres[s]) delete nombres[s];
+                        localStorage.setItem(NOMBRES, JSON.stringify(nombres)); pintar(); }
+    };
+    return tr;
+  }));
+  $("historial").replaceChildren(...lote.slice(-15).reverse().map(x => {
+    const tr = document.createElement("tr");
+    tr.append(Object.assign(document.createElement("td"), { textContent: hora(x.t) + "  " + x.id }),
+              Object.assign(document.createElement("td"), { textContent: nombre(x.sender) }));
+    return tr;
+  }));
+  const enviado = Number(localStorage.getItem(ENVIADO) || 0);
+  $("estadoLote").textContent = lote.length
+    ? (enviado >= lote.length ? "Lote enviado." : `${lote.length - enviado} lectura(s) sin enviar al PC.`)
+    : "";
+}
+
+function textoLote() {
+  const hoy = new Date().toLocaleDateString("es-CL");
+  return [`Lote Flex ${hoy} · ${lote.length} paquetes`]
+    .concat(lote.map(x => `${x.id},${x.sender},${x.t}`)).join("\n");
+}
+
+$("btnCamara").onclick = async () => {
+  if (scanner) {
+    await scanner.stop(); scanner.clear(); scanner = null;
+    $("btnCamara").textContent = "Abrir cámara"; return;
+  }
+  if (typeof Html5Qrcode === "undefined") { aviso("err", "Sin conexión", "No se pudo cargar el lector QR."); return; }
+  scanner = new Html5Qrcode("lector");
+  try {
+    await scanner.start({ facingMode: "environment" }, { fps: 12, qrbox: { width: 240, height: 240 } }, txt => {
+      const ahora = Date.now();
+      // Mientras la misma etiqueta siga frente a la cámara no se vuelve a registrar;
+      // solo cuenta de nuevo si sale de la vista por más de 3 segundos.
+      const sigueEnVista = txt === ultimo && ahora - ultimoT < 3000;
+      ultimo = txt; ultimoT = ahora;
+      if (sigueEnVista) return;
+      registrar(txt);
+    });
+    $("btnCamara").textContent = "Cerrar cámara";
+  } catch (e) {
+    scanner = null;
+    aviso("err", "No se pudo abrir la cámara", "Revisa el permiso de cámara del navegador. (" + e + ")");
+  }
+};
+
+$("btnManual").onclick = () => { const v = $("manual").value.trim(); if (v) { registrar(v); $("manual").value = ""; } };
+$("manual").addEventListener("keydown", e => { if (e.key === "Enter") $("btnManual").click(); });
+
+$("btnEnviar").onclick = async () => {
+  if (!lote.length) return;
+  const texto = textoLote();
+  try {
+    if (navigator.share) await navigator.share({ text: texto });
+    else { await navigator.clipboard.writeText(texto); alert("Lote copiado. Pégalo en el mensaje."); }
+    localStorage.setItem(ENVIADO, lote.length); pintar();
+  } catch (e) { /* cancelado */ }
+};
+$("btnCopiar").onclick = async () => {
+  if (!lote.length) return;
+  await navigator.clipboard.writeText(textoLote());
+  localStorage.setItem(ENVIADO, lote.length); pintar();
+  $("btnCopiar").textContent = "Copiado ✔"; setTimeout(() => $("btnCopiar").textContent = "Copiar lote", 1500);
+};
+$("btnLimpiar").onclick = () => {
+  const pendientes = lote.length - Number(localStorage.getItem(ENVIADO) || 0);
+  if (!lote.length) return;
+  if (!confirm(pendientes > 0 ? `Hay ${pendientes} lectura(s) SIN ENVIAR. ¿Borrar igual?` : "¿Empezar un lote nuevo?")) return;
+  lote = []; guardar(); localStorage.setItem(ENVIADO, 0); pintar();
+  aviso("", "Lote nuevo", "Listo para escanear.");
+};
+
+pintar();
+</script>
+</body>
+</html>
